@@ -6,7 +6,7 @@ This project provides a step-by-step guide and automation scripts for deploying 
 
 This guide covers everything from initial server setup and configuration to installing Dokploy, ensuring your VPS meets all the requirements for running Dokploy successfully. While this example uses Hetzner, the instructions can be adapted for any VPS provider.
 
-**Favoravle VPS Provider**
+**Favorable VPS Providers**
 
 - **Hetzner** - https://www.hetzner.com/
 - **Hostinger** - https://www.hostinger.com/
@@ -14,22 +14,27 @@ This guide covers everything from initial server setup and configuration to inst
 
 ## Table of Contents
 
-- [Create & configure VPS](#create--configure-vps)
-  - [Create VPS](#create-vps)
-  - [Optional: Creating an SSH Key](#optional-creating-an-ssh-key)
-  - [Configure VPS](#configure-vps)
-- [Install dokploy](#install-dokploy)
-  - [Step 1: Verify Port Availability](#step-1-verify-port-availability)
-  - [Step 2: Update System Packages](#step-2-update-system-packages)
-  - [Step 3: Install Dokploy](#step-3-install-dokploy)
-  - [Step 4: Configure Firewall](#step-4-configure-firewall)
-  - [Step 5: Access Dokploy Dashboard](#step-5-access-dokploy-dashboard)
-  - [Step 6: Configure Domain and SSL/TLS (Recommended for Production)](#step-6-configure-domain-and-ssltls-recommended-for-production)
-  - [Step 7: Verify Installation](#step-7-verify-installation)
-  - [Step 8: Post-Installation Configuration](#step-8-post-installation-configuration)
-  - [Troubleshooting](#troubleshooting)
-  - [Next Steps](#next-steps-1)
-  - [Additional Resources](#additional-resources)
+- [Automated Setup (Recommended)](#automated-setup-recommended)
+  - [Quick Start](#quick-start)
+  - [Script Structure](#script-structure)
+  - [What the Scripts Do](#what-the-scripts-do)
+- [Manual Setup](#manual-setup)
+  - [Create & configure VPS](#create--configure-vps)
+    - [Create VPS](#create-vps)
+    - [Optional: Creating an SSH Key](#optional-creating-an-ssh-key)
+    - [Configure VPS](#configure-vps)
+  - [Install dokploy](#install-dokploy)
+    - [Step 1: Verify Port Availability](#step-1-verify-port-availability)
+    - [Step 2: Update System Packages](#step-2-update-system-packages)
+    - [Step 3: Install Dokploy](#step-3-install-dokploy)
+    - [Step 4: Configure Firewall](#step-4-configure-firewall)
+    - [Step 5: Access Dokploy Dashboard](#step-5-access-dokploy-dashboard)
+    - [Step 6: Configure Domain and SSL/TLS (Recommended for Production)](#step-6-configure-domain-and-ssltls-recommended-for-production)
+    - [Step 7: Verify Installation](#step-7-verify-installation)
+    - [Step 8: Post-Installation Configuration](#step-8-post-installation-configuration)
+    - [Troubleshooting](#troubleshooting)
+    - [Next Steps](#next-steps-1)
+    - [Additional Resources](#additional-resources)
 - [VPS Considerations](#vps-considerations)
   - [Scenario 1: Dokploy + Supabase + n8n + 1-3 Next.js Apps with PayloadCMS](#scenario-1-dokploy--supabase--n8n--1-3-nextjs-apps-with-payloadcms)
   - [Scenario 2: Dokploy + n8n + 1-3 Next.js Apps with PayloadCMS](#scenario-2-dokploy--n8n--1-3-nextjs-apps-with-payloadcms)
@@ -179,20 +184,20 @@ apt install -y curl wget git ufw fail2ban
 
 **Note**: The `-y` flag automatically confirms package installations. The upgrade may take a few minutes depending on the number of packages.
 
+**Script Reference**: This step is automated in `scripts/lib/configure-vps.sh` (lines 37-39).
+
 #### Step 3: Create a DevOps User
 
 It's a security best practice to avoid using the root account for daily operations. Create a dedicated user for DevOps tasks:
 
 ```bash
 # Create a new user (replace 'devops' with your preferred username)
-adduser devops
+adduser --disabled-password --gecos '' devops
 ```
 
-You'll be prompted to:
-- Set a password (choose a strong password)
-- Enter full name (optional, press Enter to skip)
-- Enter room number, work phone, etc. (optional, press Enter to skip)
-- Confirm the information (type 'Y' and press Enter)
+**Note**: The `--disabled-password` flag creates the user without a password (SSH key only), and `--gecos ''` skips the interactive prompts.
+
+**Script Reference**: This step is automated in `scripts/lib/configure-devops-user.sh` (lines 17-22).
 
 #### Step 4: Add User to Sudo Group
 
@@ -202,11 +207,16 @@ Grant your new user administrative privileges by adding them to the `sudo` group
 # Add user to sudo group
 usermod -aG sudo devops
 
+# Grant passwordless sudo access (optional but convenient)
+echo 'devops ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/devops
+
 # Verify the user was added to sudo group
 groups devops
 ```
 
 You should see `sudo` in the output. This allows the user to run commands with administrative privileges using `sudo`.
+
+**Script Reference**: This step is automated in `scripts/lib/configure-devops-user.sh` (lines 17-22).
 
 #### Step 5: Set Up SSH Key for the New User
 
@@ -216,8 +226,14 @@ Copy your SSH public key to the new user's account for passwordless authenticati
 # Create .ssh directory for the new user
 mkdir -p /home/devops/.ssh
 
-# Copy your public key (replace with your actual public key)
-echo "your-public-key-here" > /home/devops/.ssh/authorized_keys
+# Copy SSH key from root's authorized_keys (if available)
+# This is useful if Hetzner added your key to root during server creation
+if [ -f /root/.ssh/authorized_keys ]; then
+    cp /root/.ssh/authorized_keys /home/devops/.ssh/authorized_keys
+else
+    # Or manually add your public key
+    echo "your-public-key-here" > /home/devops/.ssh/authorized_keys
+fi
 
 # Set proper permissions
 chmod 700 /home/devops/.ssh
@@ -231,6 +247,8 @@ chown -R devops:devops /home/devops/.ssh
 # From your local machine, run:
 ssh-copy-id devops@your-server-ip
 ```
+
+**Script Reference**: This step is automated in `scripts/lib/configure-devops-user.sh` (lines 35-47).
 
 #### Step 6: Test the New User Account
 
@@ -253,6 +271,13 @@ Now let's implement some basic security measures:
 ##### 7.1: Configure Firewall (UFW)
 
 ```bash
+# Reset firewall to default state (optional, removes existing rules)
+sudo ufw --force reset
+
+# Set default policies
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
 # Allow SSH (important - do this first!)
 sudo ufw allow OpenSSH
 
@@ -260,14 +285,19 @@ sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
+# Allow Dokploy dashboard port
+sudo ufw allow 3000/tcp
+
 # Enable the firewall
-sudo ufw enable
+sudo ufw --force enable
 
 # Check firewall status
 sudo ufw status
 ```
 
 **Warning**: Make sure SSH is allowed before enabling the firewall, or you may lock yourself out!
+
+**Script Reference**: This step is automated in `scripts/lib/secure-vps.sh` (lines 31-43).
 
 ##### 7.2: Secure SSH Configuration
 
@@ -317,6 +347,8 @@ sudo sshd -t
 
 # If no errors, restart SSH
 sudo systemctl restart sshd
+# or
+sudo systemctl restart ssh
 ```
 
 **Before closing your current SSH session**, open a new terminal and test connecting with the new user to ensure everything works:
@@ -325,6 +357,8 @@ sudo systemctl restart sshd
 # From your local machine
 ssh devops@your-server-ip
 ```
+
+**Script Reference**: This step is automated in `scripts/lib/secure-vps.sh` (lines 46-112). The script handles all SSH configuration changes programmatically and tests the configuration before restarting the service.
 
 ##### 7.3: Configure Fail2ban
 
@@ -340,19 +374,23 @@ sudo systemctl start fail2ban
 sudo systemctl status fail2ban
 ```
 
+**Script Reference**: This step is automated in `scripts/lib/secure-vps.sh` (lines 129-136).
+
 ##### 7.4: Set Up Automatic Security Updates
 
 Enable automatic security updates:
 
 ```bash
 # Install unattended-upgrades
+export DEBIAN_FRONTEND=noninteractive
 sudo apt install -y unattended-upgrades
 
-# Enable automatic updates
-sudo dpkg-reconfigure -plow unattended-upgrades
+# Enable automatic updates (non-interactive)
+echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | sudo debconf-set-selections
+sudo dpkg-reconfigure -f noninteractive unattended-upgrades
 ```
 
-Select "Yes" when prompted to automatically download and install security updates.
+**Script Reference**: This step is automated in `scripts/lib/secure-vps.sh` (lines 139-148).
 
 ##### 7.5: Configure Timezone
 
@@ -369,7 +407,39 @@ sudo timedatectl set-timezone Europe/Berlin
 timedatectl
 ```
 
-#### Step 8: Final Verification
+**Script Reference**: This step is automated in `scripts/lib/configure-vps.sh` (line 40). The timezone is configurable when running `scripts/setup.sh` (default: Europe/Berlin).
+
+#### Step 8: Create Swap File (Recommended)
+
+Creating swap space helps handle memory spikes during builds and workflow execution:
+
+```bash
+# Check if swap already exists
+swapon --show
+
+# Create 8GB swap file (adjust size as needed)
+sudo fallocate -l 8G /swapfile
+
+# Set proper permissions
+sudo chmod 600 /swapfile
+
+# Format as swap
+sudo mkswap /swapfile
+
+# Enable swap
+sudo swapon /swapfile
+
+# Make swap permanent (add to /etc/fstab)
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Verify swap is active
+swapon --show
+free -h
+```
+
+**Script Reference**: This step is automated in `scripts/setup.sh` (lines 156-187). The script checks if swap already exists and is idempotent (safe to run multiple times).
+
+#### Step 9: Final Verification
 
 Before finishing, verify everything is working correctly:
 
@@ -380,7 +450,7 @@ uname -a
 # Check disk space
 df -h
 
-# Check memory
+# Check memory and swap
 free -h
 
 # Check firewall status
@@ -388,6 +458,9 @@ sudo ufw status verbose
 
 # Check SSH service
 sudo systemctl status sshd
+
+# Check timezone
+timedatectl
 ```
 
 #### Security Checklist
@@ -401,6 +474,7 @@ sudo systemctl status sshd
 - ✅ Fail2ban installed and running
 - ✅ Automatic security updates enabled
 - ✅ Timezone configured
+- ✅ Swap file created (8GB recommended)
 
 #### Next Steps
 
@@ -435,6 +509,8 @@ sudo ss -tulnp | grep -E ':(80|443|3000) '
 
 **Note**: If you have a web server (Apache, Nginx) or other services using these ports, you'll need to stop or reconfigure them before installing Dokploy.
 
+**Script Reference**: This step is automated in `scripts/lib/install-dokploy.sh` (lines 30-41).
+
 ### Step 2: Update System Packages
 
 Ensure your system is up to date:
@@ -460,7 +536,7 @@ Run the official Dokploy installation script:
 
 ```bash
 # Download and run the installation script
-curl -sSL https://dokploy.com/install.sh | sh
+curl -sSL https://dokploy.com/install.sh | sudo sh
 ```
 
 This script will:
@@ -478,6 +554,8 @@ The installation process typically takes 5-10 minutes depending on your server's
 - Downloading and starting Docker containers
 - Setting up Traefik reverse proxy
 - Configuring PostgreSQL and Redis databases
+
+**Script Reference**: This step is automated in `scripts/lib/install-dokploy.sh` (lines 44-50). The script also checks if Dokploy is already installed before attempting installation.
 
 #### Option B: Manual Installation (Advanced)
 
@@ -506,6 +584,10 @@ sudo ufw status verbose
 ```
 
 **Security Note**: After setting up your domain and HTTPS (Step 6), you can optionally restrict direct IP access to port 3000 and only allow access via your domain.
+
+**Note**: If you followed the automated setup or manual VPS configuration, the firewall should already be configured. This step is only needed if you're installing Dokploy on a server that hasn't been configured yet.
+
+**Script Reference**: Firewall configuration is automated in `scripts/lib/secure-vps.sh` (lines 31-43) during VPS setup.
 
 ### Step 5: Access Dokploy Dashboard
 
